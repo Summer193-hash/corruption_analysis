@@ -11,7 +11,7 @@ warnings.filterwarnings("ignore")
 
 class CorruptedDataset(Dataset):
     """Wraps a PyTorch dataset to apply corruptions dynamically."""
-    def __init__(self, base_dataset, dataset_name, corruption_name=None, severity=2, normalize=False, image_size=64):
+    def __init__(self, base_dataset, dataset_name, corruption_name=None, severity=2, normalize=False, image_size=32):
         self.base_dataset = base_dataset
         self.dataset_name = dataset_name
         self.corruption_name = corruption_name
@@ -42,7 +42,6 @@ class CorruptedDataset(Dataset):
         image, label = self.base_dataset[idx]
 
         # 1. Standardize formatting & size for ALL datasets
-        # Convert ImageNet to RGB, then force everything to the specified size
         if self.dataset_name == 'imagenet100':
             image = image.convert('RGB')
         
@@ -75,18 +74,19 @@ class CorruptedDataset(Dataset):
         return image_tensor, label
 
 
-def get_dataloaders(dataset_name, batch_size=64, corruption_name=None, severity=2, normalize=False):
+def get_dataloaders(dataset_name, batch_size=64, corruption_name=None, severity=2, normalize=False, image_size=None):
     """Returns train, validation, and test dataloaders for the specified dataset."""
     
-    # Set image size based on dataset
-    if dataset_name == 'fmnist':
-        image_size = 32
-    elif dataset_name == 'cifar10':
-        image_size = 128
-    elif dataset_name == 'imagenet100':
-        image_size = 224
-    else:
-        raise ValueError("Invalid dataset name")
+    # Set default image size based on dataset if not explicitly overridden (e.g., by ViT)
+    if image_size is None:
+        if dataset_name == 'fmnist':
+            image_size = 32  # Padded from 28x28 for corruption library compatibility
+        elif dataset_name == 'cifar10':
+            image_size = 32  # Native CIFAR-10 size
+        elif dataset_name == 'imagenet100':
+            image_size = 224
+        else:
+            raise ValueError("Invalid dataset name")
     
     if dataset_name == 'fmnist':
         full_train_dataset = datasets.FashionMNIST(root='./data', train=True, download=True, transform=None)
@@ -123,11 +123,14 @@ def get_dataloaders(dataset_name, batch_size=64, corruption_name=None, severity=
     test_dataset_corr = CorruptedDataset(test_dataset, dataset_name, corruption_name=corruption_name, severity=severity, normalize=normalize, image_size=image_size)
 
     # Prevent multiprocessing crashes on Windows
-    workers = 4 if os.name != 'nt' else 0
+    workers = 8
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=workers, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=workers, pin_memory=True)
-    test_loader_clean = DataLoader(test_dataset_clean, batch_size=batch_size, shuffle=False, num_workers=workers, pin_memory=True)
-    test_loader_corr = DataLoader(test_dataset_corr, batch_size=batch_size, shuffle=False, num_workers=workers, pin_memory=True)
+    # Set persistent_workers to True to stop Windows from killing and respawning them every epoch
+    persist = True if workers > 0 else False
+
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=workers, pin_memory=False, persistent_workers=persist)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=workers, pin_memory=False, persistent_workers=persist)
+    test_loader_clean = DataLoader(test_dataset_clean, batch_size=batch_size, shuffle=False, num_workers=workers, pin_memory=False, persistent_workers=persist)
+    test_loader_corr = DataLoader(test_dataset_corr, batch_size=batch_size, shuffle=False, num_workers=workers, pin_memory=False, persistent_workers=persist)
 
     return train_loader, val_loader, test_loader_clean, test_loader_corr

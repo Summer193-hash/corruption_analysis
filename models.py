@@ -1,16 +1,19 @@
 import torch
 import torch.nn as nn
 import torchvision.models as models
+import timm
 
 class ResNet18(nn.Module):
     def __init__(self, num_classes=10, input_channels=3):
         super().__init__()
         self.model = models.resnet18(pretrained=True)
 
-        # Adjust first convolutional layer for grayscale or RGB input
         if input_channels == 1:
-            # Modify the first conv layer to accept 1 channel input
-            self.model.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
+            # Average pre-trained weights for 1-channel input to preserve features
+            old_conv = self.model.conv1
+            new_conv = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
+            new_conv.weight.data = old_conv.weight.data.mean(dim=1, keepdim=True)
+            self.model.conv1 = new_conv
         
         # Freeze all layers
         for param in self.model.parameters():
@@ -42,27 +45,20 @@ class VGG11(nn.Module):
         super().__init__()
         self.model = models.vgg11(pretrained=True)
 
-        # Adjust first conv layer for grayscale input
         if input_channels == 1:
             old_conv = self.model.features[0]
             new_conv = nn.Conv2d(
-                1,
-                old_conv.out_channels,
-                kernel_size=old_conv.kernel_size,
-                stride=old_conv.stride,
-                padding=old_conv.padding,
-                bias=old_conv.bias is not None,
+                1, old_conv.out_channels, kernel_size=old_conv.kernel_size,
+                stride=old_conv.stride, padding=old_conv.padding, bias=old_conv.bias is not None
             )
             new_conv.weight.data = old_conv.weight.data.mean(dim=1, keepdim=True)
             if old_conv.bias is not None:
                 new_conv.bias.data = old_conv.bias.data
             self.model.features[0] = new_conv
 
-        # Freeze all layers
         for param in self.model.parameters():
             param.requires_grad = False
 
-        # Replace classifier
         self.model.classifier[6] = nn.Linear(self.model.classifier[6].in_features, num_classes)
 
     def forward(self, x):
@@ -80,27 +76,20 @@ class ConvNeXtTiny(nn.Module):
         super().__init__()
         self.model = models.convnext_tiny(pretrained=True)
 
-        # Adjust first conv layer for grayscale input
         if input_channels == 1:
             old_conv = self.model.features[0][0]
             new_conv = nn.Conv2d(
-                1,
-                old_conv.out_channels,
-                kernel_size=old_conv.kernel_size,
-                stride=old_conv.stride,
-                padding=old_conv.padding,
-                bias=old_conv.bias is not None,
+                1, old_conv.out_channels, kernel_size=old_conv.kernel_size,
+                stride=old_conv.stride, padding=old_conv.padding, bias=old_conv.bias is not None
             )
             new_conv.weight.data = old_conv.weight.data.mean(dim=1, keepdim=True)
             if old_conv.bias is not None:
                 new_conv.bias.data = old_conv.bias.data
             self.model.features[0][0] = new_conv
 
-        # Freeze all layers
         for param in self.model.parameters():
             param.requires_grad = False
 
-        # Replace classifier
         self.model.classifier[2] = nn.Linear(self.model.classifier[2].in_features, num_classes)
 
     def forward(self, x):
@@ -113,42 +102,43 @@ class ConvNeXtTiny(nn.Module):
     
 
 class ViTBase(nn.Module):
-    def __init__(self, num_classes=10, image_size=224):
+    def __init__(self, num_classes=10, input_channels=3):
         super().__init__()
-        image_size = image_size  # ViTBase is typically trained on 224x224 
-        self.model = models.vit_b_16(pretrained=True, image_size=224)
+        
+        # timm is magic. It automatically handles adapting the pre-trained weights 
+        # from 3 channels to 1 channel if input_channels=1. No manual math needed!
+        # We are using 'vit_tiny_patch16_224' (only ~5 million parameters instead of 86 million)
+        self.model = timm.create_model(
+            'vit_tiny_patch16_224', 
+            pretrained=True, 
+            in_chans=input_channels, 
+            num_classes=num_classes
+        )
 
-        # Freeze all layers
-        for param in self.model.parameters():
-            param.requires_grad = False
-
-        # Replace classifier head
-        self.model.heads.head = nn.Linear(self.model.heads.head.in_features, num_classes)
+        # Freeze everything EXCEPT the final classification head
+        for name, param in self.model.named_parameters():
+            if 'head' not in name:
+                param.requires_grad = False
 
     def forward(self, x):
         return self.model(x)
 
     def get_features(self, x):
-        # Extract features before classification head
-        x = self.model._process_input(x)
-        n = x.shape[0]
-
-        batch_class_token = self.model.class_token.expand(n, -1, -1)
-        x = torch.cat([batch_class_token, x], dim=1)
-
-        x = self.model.encoder(x)
-
-        # CLS token
-        return x[:, 0]
+        # timm has a built-in method to extract features before the classification head
+        features = self.model.forward_features(x)
+        
+        # forward_features usually returns the sequence of tokens (Batch, Tokens, Features). 
+        # We just want the 0th token (the CLS token) for our t-SNE plot.
+        if features.dim() == 3:
+            return features[:, 0]
+        return features
 
 
 class SimpleMLP(nn.Module):
-    def __init__(self, input_size=28*28, num_classes=10):
-        # F-MNIST images are 28x28
+    def __init__(self, input_size=1024, num_classes=10):
         super(SimpleMLP, self).__init__()
         self.flatten = nn.Flatten()
         
-        # Standard architecture with 2 hidden layers
         self.features = nn.Sequential(
             nn.Linear(input_size, 512),
             nn.ReLU(),
@@ -166,7 +156,5 @@ class SimpleMLP(nn.Module):
         return out
 
     def get_features(self, x):
-        # We need this method later to extract feature maps for the t-SNE plots
         x = self.flatten(x)
         return self.features(x)
-    

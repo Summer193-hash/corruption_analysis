@@ -12,10 +12,8 @@ import warnings
 warnings.filterwarnings("ignore")
 
 def test_accuracy(model, dataloader, device):
-    """Calculates actual classification accuracy on a test set."""
     model.eval()
-    correct = 0
-    total = 0
+    correct, total = 0, 0
     with torch.no_grad():
         for inputs, labels in dataloader:
             inputs, labels = inputs.to(device), labels.to(device)
@@ -53,7 +51,6 @@ def plot_tsne(features, labels, title, save_path):
     plt.close()
 
 def create_model(model_type, input_size, num_classes, input_channels, device):
-    """Create appropriate model based on model_type."""
     if model_type == 'mlp':
         model = SimpleMLP(input_size=input_size, num_classes=num_classes)
     elif model_type == 'resnet':
@@ -63,7 +60,7 @@ def create_model(model_type, input_size, num_classes, input_channels, device):
     elif model_type == 'convnext':
         model = ConvNeXtTiny(num_classes=num_classes, input_channels=input_channels)
     elif model_type == 'vit':
-        model = ViTBase(num_classes=num_classes)
+        model = ViTBase(num_classes=num_classes, input_channels=input_channels)
     else:
         raise ValueError(f"Unknown model type: {model_type}")
     return model.to(device)
@@ -77,23 +74,32 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     if args.dataset == 'fmnist':
-        input_size, num_classes, input_channels = 64 * 64 * 1, 10, 1
+        num_classes, input_channels = 10, 1
     elif args.dataset == 'cifar10':
-        input_size, num_classes, input_channels = 64 * 64 * 3, 10, 3
+        num_classes, input_channels = 10, 3
     elif args.dataset == 'imagenet100':
-        input_size, num_classes, input_channels = 64 * 64 * 3, 100, 3
+        num_classes, input_channels = 100, 3
+
+    if args.model == 'vit' or args.dataset == 'imagenet100':
+        target_image_size = 224
+    else:
+        target_image_size = None
+
+    actual_size = 224 if target_image_size == 224 else 32
+    input_size = actual_size * actual_size * input_channels
 
     save_dir = os.path.join("results", args.dataset, args.model)
     os.makedirs(save_dir, exist_ok=True)
     
     summary_file_path = os.path.join(save_dir, "evaluation_summary.txt")
     
-    # Open summary file to write metrics
     with open(summary_file_path, "w") as summary_file:
         summary_file.write(f"=== Evaluation Summary for {args.dataset.upper()} ===\n\n")
 
-        # Load testing dataloaders
-        _, _, test_loader_clean, test_loader_corr = get_dataloaders(args.dataset, batch_size=64, corruption_name='gaussian_noise', severity=2)
+        _, _, test_loader_clean, test_loader_corr = get_dataloaders(
+            args.dataset, batch_size=64, corruption_name='gaussian_noise',
+            severity=2, image_size=target_image_size
+        )
 
         # 1. Evaluate Clean-Trained Model
         clean_path = os.path.join(save_dir, f'clean.pth')
@@ -116,7 +122,6 @@ if __name__ == "__main__":
             plot_tsne(f_clean, l_clean, f"Clean Model ({args.dataset})", os.path.join(save_dir, f"tsne_clean.png"))
         else:
             print(f"\n[ERROR] Model checkpoint not found at: {clean_path}")
-            print(f"Make sure you run: python train.py --dataset {args.dataset}")
 
         # 2. Evaluate Corrupted-Trained Model
         corr_path = os.path.join(save_dir, f'corr.pth')
